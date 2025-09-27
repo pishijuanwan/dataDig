@@ -21,29 +21,70 @@ class StrategyService:
     
     def run_single_strategy_backtest(
         self,
-        strategy_class: Type[BaseStrategy],
-        strategy_config: Dict[str, Any],
+        strategy_class: Type[BaseStrategy] = None,
+        strategy_config: Dict[str, Any] = None,
+        buy_strategy_class: Type[BaseStrategy] = None,
+        buy_strategy_config: Dict[str, Any] = None,
+        sell_strategy_class: Type[BaseStrategy] = None,
+        sell_strategy_config: Dict[str, Any] = None,
         symbols: List[str] = None,
         start_date: str = "20240101",
         end_date: str = None,
         commission_rate: float = 0.002
     ) -> BacktestResult:
         """
-        运行单个策略的回测
+        运行策略回测（支持买入卖出策略分离）
         
         Args:
-            strategy_class: 策略类
-            strategy_config: 策略配置参数
+            strategy_class: 策略类（兼容旧接口，用于组合策略）
+            strategy_config: 策略配置（兼容旧接口）
+            buy_strategy_class: 买入策略类
+            buy_strategy_config: 买入策略配置
+            sell_strategy_class: 卖出策略类
+            sell_strategy_config: 卖出策略配置
             symbols: 股票代码列表，如果为空则使用默认股票池
-            start_date: 开始日期 YYYYMMDD，默认2020年开始
+            start_date: 开始日期 YYYYMMDD，默认2024年开始
             end_date: 结束日期 YYYYMMDD，默认到今天
-            commission_rate: 手续费率，默认0.03%
+            commission_rate: 手续费率，默认0.2%
             
         Returns:
             回测结果
+            
+        Notes:
+            - 新接口：提供buy_strategy_class/sell_strategy_class进行策略分离
+            - 兼容接口：提供strategy_class作为组合策略（同时用于买入卖出）
+            - 两种方式至少要提供一种
         """
-        if self.logger:
-            self.logger.info(f"[单策略回测] 开始运行策略={strategy_class.__name__}")
+        # 参数验证和策略创建
+        buy_strategy = None
+        sell_strategy = None
+        
+        # 处理兼容接口（旧接口）
+        if strategy_class and strategy_config:
+            if self.logger:
+                self.logger.info(f"[单策略回测] 使用组合策略={strategy_class.__name__}")
+            config = StrategyConfig(**strategy_config)
+            combined_strategy = strategy_class(config, logger=self.logger)
+            # 组合策略同时用作买入和卖出策略
+            buy_strategy = combined_strategy
+            sell_strategy = combined_strategy
+        
+        # 处理新接口（分离策略）
+        if buy_strategy_class and buy_strategy_config:
+            if self.logger:
+                self.logger.info(f"[单策略回测] 创建买入策略={buy_strategy_class.__name__}")
+            buy_config = StrategyConfig(**buy_strategy_config)
+            buy_strategy = buy_strategy_class(buy_config, logger=self.logger)
+        
+        if sell_strategy_class and sell_strategy_config:
+            if self.logger:
+                self.logger.info(f"[单策略回测] 创建卖出策略={sell_strategy_class.__name__}")
+            sell_config = StrategyConfig(**sell_strategy_config)
+            sell_strategy = sell_strategy_class(sell_config, logger=self.logger)
+        
+        # 验证至少有一个策略
+        if not buy_strategy and not sell_strategy:
+            raise ValueError("必须提供买入策略或卖出策略中的至少一个")
         
         # 1. 处理默认参数
         if end_date is None:
@@ -54,21 +95,26 @@ class StrategyService:
             if self.logger:
                 self.logger.info(f"[股票池] 使用默认股票池，数量={len(symbols)}")
         
-        # 2. 创建策略配置和实例
-        config = StrategyConfig(**strategy_config)
-        strategy = strategy_class(config, logger=self.logger)
-        
         # 3. 执行回测
         result = self.backtest_engine.run_backtest(
-            strategy=strategy,
+            buy_strategy=buy_strategy,
+            sell_strategy=sell_strategy,
             symbols=symbols,
             start_date=start_date,
             end_date=end_date,
             commission_rate=commission_rate
         )
         
+        # 确定策略名称用于日志
+        strategy_names = []
+        if buy_strategy:
+            strategy_names.append(f"买入:{buy_strategy.name}")
+        if sell_strategy and sell_strategy != buy_strategy:
+            strategy_names.append(f"卖出:{sell_strategy.name}")
+        strategy_desc = " + ".join(strategy_names)
+        
         if self.logger:
-            self.logger.info(f"[单策略回测完成] 策略={strategy_class.__name__}，"
+            self.logger.info(f"[单策略回测完成] 策略={strategy_desc}，"
                            f"总收益率={result.summary.total_return:.2%}，"
                            f"年化收益率={result.summary.annualized_return:.2%}，"
                            f"最大回撤={result.summary.max_drawdown:.2%}")

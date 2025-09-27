@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select
 
 from src.models.daily_price import DailyPrice, StockBasic
-from src.strategy.models.base_strategy import BaseStrategy, StrategyConfig
+from src.strategy.models.base_strategy import BaseStrategy, StrategyConfig, PositionInfo
 from src.strategy.models.backtest_result import (
     BacktestResult, BacktestSummary, Trade, DailyReturn
 )
@@ -23,46 +23,82 @@ class BacktestEngine:
     
     def run_backtest(
         self,
-        strategy: BaseStrategy,
-        symbols: List[str],
-        start_date: str,
-        end_date: str,
+        buy_strategy: Optional[BaseStrategy] = None,
+        sell_strategy: Optional[BaseStrategy] = None,
+        symbols: List[str] = None,
+        start_date: str = "20240101",
+        end_date: str = None,
         commission_rate: float = 0.0003
     ) -> BacktestResult:
         """
-        运行策略回测
+        运行策略回测（支持买入卖出策略分离）
         
         Args:
-            strategy: 策略实例
+            buy_strategy: 买入策略实例，负责生成买入信号
+            sell_strategy: 卖出策略实例，负责生成卖出信号
             symbols: 股票代码列表
-            start_date: 开始日期 YYYYMMDD
-            end_date: 结束日期 YYYYMMDD  
+            start_date: 开始日期 YYYYMMDD，默认2024年开始
+            end_date: 结束日期 YYYYMMDD，默认到今天
             commission_rate: 手续费率，默认0.03%
             
         Returns:
             回测结果
+            
+        Notes:
+            - buy_strategy和sell_strategy至少要提供一个
+            - 对于组合策略，可以将同一个策略同时传给buy_strategy和sell_strategy
+            - 如果只有buy_strategy，则不会有卖出操作
+            - 如果只有sell_strategy，则不会有买入操作
         """
+        # 参数验证
+        if not buy_strategy and not sell_strategy:
+            raise ValueError("至少需要提供买入策略或卖出策略中的一个")
+        
+        if symbols is None:
+            symbols = []
+        
+        if end_date is None:
+            end_date = datetime.now().strftime("%Y%m%d")
+        
+        # 确定策略名称用于日志
+        strategy_names = []
+        if buy_strategy:
+            strategy_names.append(f"买入:{buy_strategy.name}")
+        if sell_strategy and sell_strategy != buy_strategy:
+            strategy_names.append(f"卖出:{sell_strategy.name}")
+        strategy_desc = " + ".join(strategy_names)
+        
         if self.logger:
-            self.logger.info(f"[开始回测] 策略={strategy.name}，股票数量={len(symbols)}，"
+            self.logger.info(f"[开始回测] 策略={strategy_desc}，股票数量={len(symbols)}，"
                            f"时间范围={start_date}~{end_date}")
         
         # 1. 初始化策略
-        strategy.initialize()
+        if buy_strategy:
+            buy_strategy.initialize()
+            if self.logger:
+                self.logger.info(f"[策略初始化] 买入策略 {buy_strategy.name} 初始化完成")
+        
+        if sell_strategy and sell_strategy != buy_strategy:
+            sell_strategy.initialize()
+            if self.logger:
+                self.logger.info(f"[策略初始化] 卖出策略 {sell_strategy.name} 初始化完成")
         
         # 2. 加载历史数据
         price_data = self._load_price_data(symbols, start_date, end_date)
         if price_data.empty:
             if self.logger:
                 self.logger.warning("[回测数据] 未找到符合条件的价格数据")
-            return self._create_empty_result(strategy, start_date, end_date)
+            # 使用买入策略作为主策略创建空结果
+            main_strategy = buy_strategy or sell_strategy
+            return self._create_empty_result(main_strategy, start_date, end_date)
         
         # 3. 执行回测逻辑
         result = self._execute_backtest(
-            strategy, price_data, start_date, end_date, commission_rate
+            buy_strategy, sell_strategy, price_data, start_date, end_date, commission_rate
         )
         
         if self.logger:
-            self.logger.info(f"[回测完成] 策略={strategy.name}，总收益率={result.summary.total_return:.2%}，"
+            self.logger.info(f"[回测完成] 策略={strategy_desc}，总收益率={result.summary.total_return:.2%}，"
                            f"最大回撤={result.summary.max_drawdown:.2%}，交易次数={result.summary.total_trades}")
         
         return result
@@ -120,14 +156,15 @@ class BacktestEngine:
     
     def _execute_backtest(
         self,
-        strategy: BaseStrategy,
+        buy_strategy: Optional[BaseStrategy],
+        sell_strategy: Optional[BaseStrategy],
         price_data: pd.DataFrame,
         start_date: str,
         end_date: str,
         commission_rate: float
     ) -> BacktestResult:
         """
-        执行回测逻辑
+        执行回测逻辑（支持分离的买入卖出策略）
         """
         trades = []
         daily_returns = []
@@ -136,11 +173,18 @@ class BacktestEngine:
         grouped = price_data.groupby('trade_date')
         trade_dates = sorted(grouped.groups.keys())
         
-        initial_cash = strategy.cash
+        # 使用买入策略作为主策略管理资金和持仓，如果没有买入策略则使用卖出策略
+        main_strategy = buy_strategy or sell_strategy
+        initial_cash = main_strategy.cash
         previous_total_value = initial_cash
         
+        # 统一的资金和持仓管理
+        current_cash = initial_cash
+        positions = {}  # 统一管理持仓 {symbol: PositionInfo}
+        
         if self.logger:
-            self.logger.info(f"[执行回测] 共{len(trade_dates)}个交易日需要处理")
+            self.logger.info(f"[执行回测] 共{len(trade_dates)}个交易日需要处理，"
+                           f"初始资金={initial_cash:,.0f}，主策略={main_strategy.name}")
         
         for i, trade_date in enumerate(trade_dates):
             daily_data = grouped.get_group(trade_date)
@@ -154,49 +198,69 @@ class BacktestEngine:
             for _, row in daily_data.iterrows():
                 symbol = row['ts_code']
                 
-                # 调用策略获取交易信号
-                signal = strategy.on_bar(symbol, row)
-                
-                # 处理买入信号
-                if signal == "buy" and strategy.cash > 1000:  # 至少1000元才能买入
-                    quantity = strategy.get_position_size(symbol, row['close'])
-                    if quantity > 0:
-                        amount = quantity * row['close']
-                        commission = amount * commission_rate
-                        total_cost = amount + commission
-                        
-                        if strategy.cash >= total_cost:
-                            # 执行买入
-                            strategy.update_position(symbol, quantity, row['close'], 'buy')
-                            strategy.cash -= commission  # 扣除手续费
+                # 处理买入信号（如果有买入策略）
+                if buy_strategy and current_cash > 1000:  # 至少1000元才能买入
+                    if buy_strategy.should_buy(symbol, row):
+                        # 使用买入策略计算仓位大小
+                        buy_strategy.cash = current_cash  # 临时更新现金状态
+                        quantity = buy_strategy.get_position_size(symbol, row['close'])
+                        if quantity > 0:
+                            amount = quantity * row['close']
+                            commission = amount * commission_rate
+                            total_cost = amount + commission
                             
-                            trade = Trade(
-                                symbol=symbol,
-                                trade_date=trade_date,
-                                action='buy',
-                                quantity=quantity,
-                                price=row['close'],
-                                amount=amount,
-                                commission=commission
-                            )
-                            trades.append(trade)
-                            
-                            if self.logger:
-                                self.logger.info(f"[执行交易] {trade_date} 买入 {symbol} {quantity}股，"
-                                               f"价格={row['close']:.2f}，手续费={commission:.2f}")
+                            if current_cash >= total_cost:
+                                # 执行买入 - 更新统一持仓管理
+                                if symbol not in positions:
+                                    positions[symbol] = PositionInfo()
+                                    positions[symbol].symbol = symbol
+                                
+                                pos = positions[symbol]
+                                total_cost_shares = pos.quantity * pos.avg_price + quantity * row['close']
+                                total_quantity = pos.quantity + quantity
+                                if total_quantity > 0:
+                                    pos.avg_price = total_cost_shares / total_quantity
+                                pos.quantity = total_quantity
+                                current_cash -= total_cost
+                                
+                                # 🔧 修复：同步更新买入策略的内部状态
+                                buy_strategy.cash = current_cash
+                                buy_strategy.update_position(symbol, quantity, row['close'], 'buy')
+                                
+                                trade = Trade(
+                                    symbol=symbol,
+                                    trade_date=trade_date,
+                                    action='buy',
+                                    quantity=quantity,
+                                    price=row['close'],
+                                    amount=amount,
+                                    commission=commission
+                                )
+                                trades.append(trade)
+                                
+                                if self.logger:
+                                    self.logger.info(f"[执行交易] {trade_date} 买入 {symbol} {quantity}股，"
+                                                   f"价格={row['close']:.2f}，手续费={commission:.2f}")
                 
-                # 处理卖出信号
-                elif signal == "sell" and symbol in strategy.positions:
-                    position = strategy.positions[symbol]
-                    if position.quantity > 0:
+                # 处理卖出信号（如果有卖出策略且有持仓）
+                if sell_strategy and symbol in positions:
+                    position = positions[symbol]
+                    if position.quantity > 0 and sell_strategy.should_sell(symbol, row):
                         quantity = position.quantity
                         amount = quantity * row['close']
                         commission = amount * commission_rate
                         net_amount = amount - commission
                         
-                        # 执行卖出
-                        strategy.update_position(symbol, quantity, row['close'], 'sell')
-                        strategy.cash -= commission  # 扣除手续费
+                        # 执行卖出 - 更新统一持仓管理
+                        sell_value = quantity * row['close']
+                        sell_cost = quantity * position.avg_price
+                        position.realized_pnl += sell_value - sell_cost
+                        position.quantity = 0
+                        current_cash += net_amount
+                        
+                        # 🔧 修复：同步更新卖出策略的内部状态
+                        sell_strategy.cash = current_cash
+                        sell_strategy.update_position(symbol, quantity, row['close'], 'sell')
                         
                         trade = Trade(
                             symbol=symbol,
@@ -209,13 +273,21 @@ class BacktestEngine:
                         )
                         trades.append(trade)
                         
+                        # 如果全部卖出，清空持仓
+                        del positions[symbol]
+                        
                         if self.logger:
+                            profit = sell_value - sell_cost
                             self.logger.info(f"[执行交易] {trade_date} 卖出 {symbol} {quantity}股，"
-                                           f"价格={row['close']:.2f}，手续费={commission:.2f}")
+                                           f"价格={row['close']:.2f}，盈亏={profit:.2f}，手续费={commission:.2f}")
             
             # 计算当日总资产价值
-            total_value = strategy.get_current_value(current_prices)
-            stock_value = total_value - strategy.cash
+            stock_value = 0.0
+            for symbol, pos in positions.items():
+                if symbol in current_prices:
+                    stock_value += pos.quantity * current_prices[symbol]
+            
+            total_value = current_cash + stock_value
             
             # 计算收益率
             daily_return = (total_value - previous_total_value) / previous_total_value if previous_total_value > 0 else 0
@@ -224,11 +296,11 @@ class BacktestEngine:
             daily_ret = DailyReturn(
                 trade_date=trade_date,
                 total_value=total_value,
-                cash=strategy.cash,
+                cash=current_cash,
                 stock_value=stock_value,
                 daily_return=daily_return,
                 cumulative_return=cumulative_return,
-                positions=len(strategy.positions)
+                positions=len(positions)
             )
             daily_returns.append(daily_ret)
             
@@ -242,7 +314,7 @@ class BacktestEngine:
         
         # 创建回测结果
         summary = BacktestSummary(
-            strategy_name=strategy.name,
+            strategy_name=main_strategy.name,
             start_date=start_date,
             end_date=end_date,
             initial_cash=initial_cash,

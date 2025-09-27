@@ -2,7 +2,8 @@ import pandas as pd
 from typing import Dict
 from collections import defaultdict
 
-from src.strategy.models.base_strategy import BaseStrategy, StrategyConfig, TradingSignal
+from src.strategy.models.base_strategy import BaseStrategy, StrategyConfig
+from src.strategy.models.strategy_types import StrategyCapability
 
 
 class SimpleMAStrategyConfig(StrategyConfig):
@@ -15,7 +16,7 @@ class SimpleMAStrategyConfig(StrategyConfig):
 
 class SimpleMAStrategy(BaseStrategy):
     """
-    简单移动平均策略
+    简单移动平均策略（组合策略）
     
     策略规则：
     1. 当短期移动平均线上穿长期移动平均线时买入
@@ -31,27 +32,28 @@ class SimpleMAStrategy(BaseStrategy):
         self.last_signal: Dict[str, str] = {}  # 上次信号，用于判断穿越
         
         if self.logger:
-            self.logger.info(f"[策略初始化] SimpleMA策略初始化，短期窗口={config.short_window}，"
+            self.logger.info(f"[策略初始化] SimpleMA组合策略初始化，短期窗口={config.short_window}，"
                            f"长期窗口={config.long_window}")
     
     def initialize(self) -> None:
         """策略初始化"""
+        # 设置为组合策略，既可买入也可卖出
+        self.capability = StrategyCapability.combined()
+        
         if self.logger:
-            self.logger.info("[策略初始化] SimpleMA策略初始化完成")
+            self.logger.info(f"[策略初始化] SimpleMA组合策略初始化完成，策略类型={self.capability.get_strategy_type()}")
     
-    def on_bar(self, symbol: str, bar_data: pd.Series) -> str:
+    def _calculate_moving_averages(self, symbol: str, current_price: float) -> tuple:
         """
-        处理每个K线数据
+        计算移动平均线
         
         Args:
             symbol: 股票代码
-            bar_data: K线数据
+            current_price: 当前价格
             
         Returns:
-            交易信号
+            (短期均线, 长期均线) 如果数据不足返回 (None, None)
         """
-        current_price = bar_data['close']
-        
         # 更新价格历史
         self.price_history[symbol].append(current_price)
         
@@ -69,16 +71,31 @@ class SimpleMAStrategy(BaseStrategy):
         if len(prices) >= self.config.long_window:
             self.ma_long[symbol] = sum(prices[-self.config.long_window:]) / self.config.long_window
         
-        # 如果数据不足，返回持有信号
+        # 如果数据不足，返回None
         if len(prices) < self.config.long_window:
-            return TradingSignal.HOLD
+            return None, None
         
-        # 获取当前均线值
-        ma_short = self.ma_short[symbol]
-        ma_long = self.ma_long[symbol]
+        return self.ma_short[symbol], self.ma_long[symbol]
+    
+    def generate_buy_signal(self, symbol: str, bar_data: pd.Series) -> bool:
+        """
+        生成买入信号：短期均线上穿长期均线（金叉）
         
-        # 判断交易信号
-        signal = TradingSignal.HOLD
+        Args:
+            symbol: 股票代码
+            bar_data: K线数据
+            
+        Returns:
+            是否应该买入
+        """
+        current_price = bar_data['close']
+        
+        # 计算移动平均线
+        ma_short, ma_long = self._calculate_moving_averages(symbol, current_price)
+        
+        # 如果数据不足，不买入
+        if ma_short is None or ma_long is None:
+            return False
         
         # 金叉：短期均线上穿长期均线，买入信号
         if ma_short > ma_long:
@@ -86,29 +103,55 @@ class SimpleMAStrategy(BaseStrategy):
             if symbol not in self.last_signal or self.last_signal[symbol] != 'bullish':
                 # 确保没有持仓才买入
                 if symbol not in self.positions or self.positions[symbol].quantity == 0:
-                    signal = TradingSignal.BUY
+                    self.last_signal[symbol] = 'bullish'
                     
                     if self.logger:
-                        self.logger.info(f"[交易信号] {bar_data['trade_date']} {symbol} 金叉买入信号，"
+                        self.logger.info(f"[买入信号] {bar_data['trade_date']} {symbol} 金叉买入信号，"
                                        f"短期均线={ma_short:.2f}，长期均线={ma_long:.2f}，价格={current_price:.2f}")
+                    
+                    return True
             
             self.last_signal[symbol] = 'bullish'
         
+        return False
+    
+    def generate_sell_signal(self, symbol: str, bar_data: pd.Series) -> bool:
+        """
+        生成卖出信号：短期均线下穿长期均线（死叉）
+        
+        Args:
+            symbol: 股票代码
+            bar_data: K线数据
+            
+        Returns:
+            是否应该卖出
+        """
+        current_price = bar_data['close']
+        
+        # 计算移动平均线
+        ma_short, ma_long = self._calculate_moving_averages(symbol, current_price)
+        
+        # 如果数据不足，不卖出
+        if ma_short is None or ma_long is None:
+            return False
+        
         # 死叉：短期均线下穿长期均线，卖出信号  
-        elif ma_short < ma_long:
+        if ma_short < ma_long:
             # 检查是否刚刚发生死叉
             if symbol not in self.last_signal or self.last_signal[symbol] != 'bearish':
                 # 确保有持仓才卖出
                 if symbol in self.positions and self.positions[symbol].quantity > 0:
-                    signal = TradingSignal.SELL
+                    self.last_signal[symbol] = 'bearish'
                     
                     if self.logger:
-                        self.logger.info(f"[交易信号] {bar_data['trade_date']} {symbol} 死叉卖出信号，"
+                        self.logger.info(f"[卖出信号] {bar_data['trade_date']} {symbol} 死叉卖出信号，"
                                        f"短期均线={ma_short:.2f}，长期均线={ma_long:.2f}，价格={current_price:.2f}")
+                    
+                    return True
             
             self.last_signal[symbol] = 'bearish'
         
-        return signal
+        return False
     
     def get_position_size(self, symbol: str, price: float) -> int:
         """

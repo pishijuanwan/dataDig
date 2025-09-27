@@ -19,7 +19,7 @@ from src.config.settings import load_settings
 from src.app_logging.logger import setup_logger
 from src.db.mysql_client import MySQLClient
 from src.strategy.services.strategy_service import StrategyService
-from src.strategy.strategies.simple_ma_strategy import SimpleMAStrategy, SimpleMAStrategyConfig
+from src.strategy.strategies.combined_strategies.simple_ma_strategy import SimpleMAStrategy, SimpleMAStrategyConfig
 
 
 def create_results_directory():

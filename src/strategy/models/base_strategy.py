@@ -3,6 +3,8 @@ from typing import Dict, Any, Optional
 import pandas as pd
 from datetime import datetime
 
+from .strategy_types import StrategyType, StrategyCapability
+
 
 class TradingSignal:
     """交易信号"""
@@ -40,6 +42,9 @@ class BaseStrategy(ABC):
         self.cash = getattr(config, 'initial_cash', 100000.0)  # 初始资金
         self.total_value = self.cash  # 总价值
         
+        # 策略能力设置，子类需要在 initialize() 中设置
+        self.capability: StrategyCapability = StrategyCapability.combined()
+        
         if self.logger:
             self.logger.info(f"[策略初始化] 策略名称={self.name}，初始资金={self.cash}")
     
@@ -51,35 +56,49 @@ class BaseStrategy(ABC):
         """
         pass
     
-    @abstractmethod  
-    def on_bar(self, symbol: str, bar_data: pd.Series) -> str:
+    def generate_buy_signal(self, symbol: str, bar_data: pd.Series) -> bool:
         """
-        每个K线数据到来时的处理逻辑
+        生成买入信号
         
         Args:
             symbol: 股票代码
             bar_data: K线数据（包含 open, high, low, close, vol, amount 等字段）
             
         Returns:
-            交易信号: TradingSignal.BUY, TradingSignal.SELL, TradingSignal.HOLD
+            是否应该买入
         """
-        pass
+        return False
+    
+    def generate_sell_signal(self, symbol: str, bar_data: pd.Series) -> bool:
+        """
+        生成卖出信号
+        
+        Args:
+            symbol: 股票代码
+            bar_data: K线数据（包含 open, high, low, close, vol, amount 等字段）
+            
+        Returns:
+            是否应该卖出
+        """
+        return False
     
     def should_buy(self, symbol: str, bar_data: pd.Series) -> bool:
         """
         判断是否应该买入
-        子类可以重写此方法
+        只有策略支持买入时才会返回买入信号
         """
-        signal = self.on_bar(symbol, bar_data)
-        return signal == TradingSignal.BUY
+        if not self.capability.can_buy:
+            return False
+        return self.generate_buy_signal(symbol, bar_data)
     
     def should_sell(self, symbol: str, bar_data: pd.Series) -> bool:
         """
         判断是否应该卖出
-        子类可以重写此方法
+        只有策略支持卖出时才会返回卖出信号
         """
-        signal = self.on_bar(symbol, bar_data)
-        return signal == TradingSignal.SELL
+        if not self.capability.can_sell:
+            return False
+        return self.generate_sell_signal(symbol, bar_data)
     
     def get_position_size(self, symbol: str, price: float) -> int:
         """
@@ -176,6 +195,9 @@ class BaseStrategy(ABC):
         """
         return {
             "name": self.name,
+            "strategy_type": self.capability.get_strategy_type(),
+            "can_buy": self.capability.can_buy,
+            "can_sell": self.capability.can_sell,
             "initial_cash": getattr(self.config, 'initial_cash', 100000.0),
             "current_cash": self.cash,
             "positions": len(self.positions),

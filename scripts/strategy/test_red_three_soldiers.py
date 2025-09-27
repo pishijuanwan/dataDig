@@ -19,7 +19,7 @@ sys.path.append('/Users/nxm/PycharmProjects/dataDig')
 from src.config.settings import load_settings
 from src.app_logging.logger import setup_logger
 from src.db.mysql_client import MySQLClient
-from src.strategy.strategies.red_three_soldiers_strategy import (
+from src.strategy.strategies.combined_strategies.red_three_soldiers_strategy import (
     RedThreeSoldiersStrategy, 
     RedThreeSoldiersConfig
 )
@@ -180,8 +180,8 @@ def run_red_three_soldiers_backtest():
         # 4. 策略配置
         strategy_config = {
             'initial_cash': 100000.0,
-            'max_stocks': 10,  # 最多同时持有10只股票
-            'position_per_stock': 0.1  # 每只股票10%仓位
+            'max_stocks': 5,  # 最多同时持有10只股票
+            'position_per_stock': 0.2  # 每只股票10%仓位
         }
         
         # 5. 获取主板股票列表（限制数量用于测试）
@@ -210,7 +210,7 @@ def run_red_three_soldiers_backtest():
             symbols=test_symbols,
             start_date="20240101",
             end_date="20250924",
-            commission_rate=0.002
+            commission_rate=0.001
         )
         
         # 7. 输出结果
