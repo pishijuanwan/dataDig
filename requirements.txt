@@ -1,0 +1,7 @@
+pandas==2.2.2
+SQLAlchemy==2.0.34
+PyMySQL==1.1.1
+tushare==1.4.13
+tenacity==9.0.0
+PyYAML==6.0.2
+python-dateutil==2.9.0.post0
