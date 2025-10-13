@@ -20,10 +20,11 @@ from src.config.settings import load_settings
 from src.app_logging.logger import setup_logger
 from src.db.mysql_client import MySQLClient
 from src.strategy.services.strategy_service import StrategyService
-from src.strategy.strategies.combined_strategies.red_three_soldiers_strategy import (
+from src.strategy.strategies.buy_strategies.red_three_soldiers_strategy import (
     RedThreeSoldiersStrategy, 
     RedThreeSoldiersConfig
 )
+from src.strategy.strategies.sell_strategies.drop_stop_loss_strategy import DropStopLossStrategy, DropStopLossConfig
 
 
 def get_main_board_symbols(strategy_service: StrategyService) -> list:
@@ -58,25 +59,32 @@ def get_main_board_symbols(strategy_service: StrategyService) -> list:
 def run_enhanced_red_three_soldiers_backtest():
     """运行增强版红三兵策略回测"""
     
-    print("增强版红三兵策略回测")
+    print("增强版红三兵策略回测 (分离策略版本)")
     print("=" * 80)
     print(f"开始时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print()
-    print("策略增强条件:")
+    print("🔥 买入策略 - 红三兵增强版:")
     print("1. ✅ 连续三天均为阳线")
     print("2. ✅ 开盘价呈阶梯式包容")
     print("3. ✅ 收盘价呈阶梯式上涨")
-    print("4. 🆕 前三天成交量持续递增")
+    print("4. 🆕 成交量超过前5天最高值50%")
     print("5. 🆕 每日实体比例≥50%")
-    print("6. ✅ 仅限沪深主板股票")
-    print("7. 🆕 双重止损：总体跌幅>3%强制止损，当日跌>2%止损")
+    print("6. 🆕 每日涨幅≥1%")
+    print("7. ✅ 仅限沪深主板股票")
+    print()
+    print("🛡️ 卖出策略 - 下跌止损:")
+    print("1. 🆕 总体跌幅>3%：强制止损")
+    print("2. 🆕 当日跌幅>2%：触发止损")
+    print("3. ✅ 当日上涨：继续持有")
     print("=" * 80)
     
     try:
         # 1. 初始化配置和日志
         settings = load_settings()
         logger = setup_logger('INFO', '/Users/nxm/PycharmProjects/dataDig/logs', 'enhanced_red_three_soldiers_backtest.log')
-        logger.info("[增强版红三兵回测] 开始运行增强版红三兵策略回测")
+        logger.info("[增强版红三兵回测] 开始运行增强版红三兵策略回测 (分离策略版本)")
+        logger.info("[增强版红三兵回测] 买入策略: 红三兵增强版")
+        logger.info("[增强版红三兵回测] 卖出策略: 下跌止损策略")
         
         # 2. 数据库连接
         mysql_client = MySQLClient(
@@ -110,29 +118,30 @@ def run_enhanced_red_three_soldiers_backtest():
         print(f"   - 预计回测时长: 约{len(main_board_symbols) * 2 // 60}分钟")
         print()
         
-        # 确认是否继续
-        print("⚠️  注意：主板股票数量较多，回测将花费较长时间")
-        user_input = input("是否继续执行回测？(输入 'y' 或 'yes' 继续，其他任意键退出): ").lower().strip()
-        if user_input not in ['y', 'yes']:
-            print("❌ 用户取消回测")
-            return False
-        
         print("\n🚀 开始执行增强版红三兵策略回测...")
         
         # 5. 策略配置
-        strategy_config = {
-            'initial_cash': 1000000.0,    # 100万初始资金
-            'max_stocks': 50,             # 最多同时持有50只股票
-            'position_per_stock': 0.02    # 每只股票分配2%资金
+        buy_strategy_config = {
+            'initial_cash': 200000.0,    # 100万初始资金
+            'max_stocks': 10,             # 最多同时持有50只股票
+            'position_per_stock': 0.1    # 每只股票分配2%资金
+        }
+        
+        sell_strategy_config = {
+            'initial_cash': 200000.0,          # 保持一致的初始资金设置
+            'daily_stop_loss_threshold': 0.02,  # 当日下跌2%止损
+            'total_loss_threshold': 0.03         # 总体跌幅3%强制止损
         }
         
         logger.info(f"[增强版红三兵回测] 主板股票数量: {len(main_board_symbols)}")
-        logger.info(f"[增强版红三兵回测] 初始资金: {strategy_config['initial_cash']:,.0f}")
+        logger.info(f"[增强版红三兵回测] 初始资金: {buy_strategy_config['initial_cash']:,.0f}")
         
-        # 6. 运行回测
+        # 6. 运行回测 (使用分离的买入和卖出策略)
         result = strategy_service.run_single_strategy_backtest(
-            strategy_class=RedThreeSoldiersStrategy,
-            strategy_config=strategy_config,
+            buy_strategy_class=RedThreeSoldiersStrategy,
+            buy_strategy_config=buy_strategy_config,
+            sell_strategy_class=DropStopLossStrategy,
+            sell_strategy_config=sell_strategy_config,
             symbols=main_board_symbols,  # 使用所有主板股票
             start_date="20240101",
             end_date="20250927",
@@ -141,7 +150,8 @@ def run_enhanced_red_three_soldiers_backtest():
         
         # 7. 输出详细结果
         print("\n" + "="*80)
-        print("🎯 增强版红三兵策略回测结果")
+        print("🎯 增强版红三兵策略回测结果 (分离策略版本)")
+        print("🔥 买入策略: 红三兵增强版 | 🛡️ 卖出策略: 下跌止损")
         print("="*80)
         
         if result and result.summary:

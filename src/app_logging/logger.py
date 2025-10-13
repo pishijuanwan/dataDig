@@ -33,3 +33,22 @@ def setup_logger(level: str, log_dir: str, log_file: str) -> logging.Logger:
 
     logger.info("[日志] 日志系统初始化成功，级别=%s，文件=%s", level, log_path)
     return logger
+
+
+def get_logger(name: Optional[str] = None) -> logging.Logger:
+    """获取或创建日志记录器，使用默认配置"""
+    if name is None:
+        name = "dataDig"
+    
+    logger = logging.getLogger(name)
+    
+    # 如果logger还没有配置，使用默认配置
+    if not logger.handlers:
+        # 默认配置
+        log_dir = "/Users/nxm/PycharmProjects/dataDig/logs"
+        log_file = "app.log"
+        level = "INFO"
+        
+        logger = setup_logger(level, log_dir, log_file)
+    
+    return logger

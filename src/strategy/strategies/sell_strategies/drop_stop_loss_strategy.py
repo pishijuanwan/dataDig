@@ -9,11 +9,19 @@
 
 import pandas as pd
 from typing import Dict
-from src.strategy.models.base_strategy import BaseStrategy
+from src.strategy.models.base_strategy import BaseStrategy, StrategyConfig
 from src.strategy.models.strategy_types import StrategyCapability
 
 
-class DropStopLossStrategy:
+class DropStopLossConfig(StrategyConfig):
+    """下跌止损策略配置"""
+    def __init__(self, daily_stop_loss_threshold: float = 0.02, total_loss_threshold: float = 0.03, **kwargs):
+        super().__init__(**kwargs)
+        self.daily_stop_loss_threshold = daily_stop_loss_threshold  # 当日下跌止损阈值
+        self.total_loss_threshold = total_loss_threshold             # 总体下跌止损阈值
+
+
+class DropStopLossStrategy(BaseStrategy):
     """
     下跌止损卖出策略
     
@@ -23,10 +31,10 @@ class DropStopLossStrategy:
     3. 如果当天股价下跌超过2%（(开盘价-收盘价)/开盘价 > 0.02），则卖出
     """
     
-    def __init__(self, logger=None):
-        self.logger = logger
-        self.daily_stop_loss_threshold = 0.02  # 当日下跌2%止损线
-        self.total_loss_threshold = 0.03       # 相对买入价3%强制止损线
+    def __init__(self, config: DropStopLossConfig, logger=None):
+        super().__init__(config, logger)
+        self.daily_stop_loss_threshold = config.daily_stop_loss_threshold  # 当日下跌止损线
+        self.total_loss_threshold = config.total_loss_threshold             # 相对买入价止损线
         
         if self.logger:
             self.logger.info("[下跌止损策略] 下跌止损卖出策略初始化完成")
@@ -34,18 +42,42 @@ class DropStopLossStrategy:
             self.logger.info(f"[下跌止损策略] 总体止损阈值: {self.total_loss_threshold:.1%}")
             self.logger.info("[下跌止损策略] 总体止损优先级高于当日止损")
     
-    def should_sell(self, symbol: str, bar_data: pd.Series, buy_price: float = None) -> bool:
+    def initialize(self) -> None:
+        """策略初始化"""
+        # 设置为纯卖出策略
+        self.capability = StrategyCapability.sell_only()
+        
+        if self.logger:
+            self.logger.info(f"[策略初始化] 下跌止损卖出策略初始化完成，策略类型={self.capability.get_strategy_type()}")
+    
+    def generate_buy_signal(self, symbol: str, bar_data: pd.Series) -> bool:
         """
-        判断是否应该卖出
+        生成买入信号：纯卖出策略不生成买入信号
+        
+        Returns:
+            False - 纯卖出策略不产生买入信号
+        """
+        return False
+    
+    def generate_sell_signal(self, symbol: str, bar_data: pd.Series) -> bool:
+        """
+        生成卖出信号：基于双重止损条件判断是否卖出
         
         Args:
             symbol: 股票代码
             bar_data: 当天K线数据
-            buy_price: 买入价格（可选，用于计算总收益）
             
         Returns:
             是否应该卖出
         """
+        # 获取买入价格信息（从仓位中获取）
+        buy_price = None
+        if symbol in self.positions:
+            position = self.positions[symbol]
+            if hasattr(position, 'avg_price'):
+                buy_price = position.avg_price
+            elif hasattr(position, 'price'):
+                buy_price = position.price
         open_price = bar_data.get('open', 0) or 0
         close_price = bar_data.get('close', 0) or 0
         current_date = bar_data.get('trade_date', 'Unknown')
@@ -100,16 +132,19 @@ class DropStopLossStrategy:
     
     def get_strategy_info(self) -> Dict:
         """获取策略信息"""
-        return {
-            "strategy_name": "下跌止损卖出策略",
-            "strategy_type": "sell_only",
+        info = super().get_strategy_info()
+        info.update({
+            "strategy_description": "下跌止损卖出策略",
             "description": "基于当日涨跌幅和总体跌幅的双重止损卖出策略",
-            "conditions": [
+            "strategy_type": "sell_only",
+            "sell_conditions": [
                 f"总体跌幅>{self.total_loss_threshold:.1%}：强制卖出（优先级最高）",
                 "当日上涨：继续持有",
                 f"当日下跌>{self.daily_stop_loss_threshold:.1%}：执行止损"
             ],
             "daily_stop_loss_threshold": f"{self.daily_stop_loss_threshold:.1%}",
             "total_loss_threshold": f"{self.total_loss_threshold:.1%}",
-            "priority": "总体跌幅止损 > 当日止损"
-        }
+            "priority": "总体跌幅止损 > 当日止损",
+            "notes": "此策略仅负责卖出信号生成，买入策略需要单独配置"
+        })
+        return info

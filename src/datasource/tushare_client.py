@@ -44,3 +44,48 @@ class TushareClient:
         if self._logger:
             self._logger.info("[流程] 股票列表返回数量=%s", len(df) if df is not None else 0)
         return df
+
+    @retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=1, min=1, max=10), reraise=True)
+    def query_daily_basic(self, ts_code: Optional[str] = None, start_date: Optional[str] = None, end_date: Optional[str] = None, trade_date: Optional[str] = None):
+        if self._logger:
+            self._logger.info("[流程] 调用 Tushare 每日指标接口，ts_code=%s, start_date=%s, end_date=%s, trade_date=%s", ts_code, start_date, end_date, trade_date)
+        df = self._pro.daily_basic(
+            ts_code=ts_code, 
+            start_date=start_date, 
+            end_date=end_date, 
+            trade_date=trade_date,
+            fields="ts_code,trade_date,close,turnover_rate,turnover_rate_f,volume_ratio,pe,pe_ttm,pb,ps,ps_ttm,dv_ratio,dv_ttm,total_share,float_share,free_share,total_mv,circ_mv"
+        )
+        time.sleep(self._sleep)
+        if self._logger:
+            self._logger.info("[流程] Tushare 每日指标返回数据行数=%s", len(df) if df is not None else 0)
+        return df
+
+    @retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=1, min=1, max=10), reraise=True)
+    def query_index_basic(self, market: str = ""):
+        if self._logger:
+            self._logger.info("[流程] 调用 Tushare 指数基本信息接口，market=%s", market)
+        df = self._pro.index_basic(
+            market=market,
+            fields="ts_code,name,market,publisher,index_type,category,base_date,base_point,list_date"
+        )
+        time.sleep(self._sleep)
+        if self._logger:
+            self._logger.info("[流程] 指数基本信息返回数量=%s", len(df) if df is not None else 0)
+        return df
+
+    @retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=1, min=1, max=10), reraise=True)
+    def query_index_daily(self, ts_code: Optional[str] = None, start_date: Optional[str] = None, end_date: Optional[str] = None, trade_date: Optional[str] = None):
+        if self._logger:
+            self._logger.info("[流程] 调用 Tushare 指数日线接口，ts_code=%s, start_date=%s, end_date=%s, trade_date=%s", ts_code, start_date, end_date, trade_date)
+        df = self._pro.index_daily(
+            ts_code=ts_code,
+            start_date=start_date,
+            end_date=end_date,
+            trade_date=trade_date,
+            fields="ts_code,trade_date,open,high,low,close,pre_close,change,pct_chg,vol,amount"
+        )
+        time.sleep(self._sleep)
+        if self._logger:
+            self._logger.info("[流程] 指数日线返回数据行数=%s", len(df) if df is not None else 0)
+        return df

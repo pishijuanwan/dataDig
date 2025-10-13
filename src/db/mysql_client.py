@@ -1,4 +1,5 @@
 from typing import Optional
+from contextlib import contextmanager
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import sessionmaker
@@ -33,3 +34,17 @@ class MySQLClient:
             engine = self.create_engine()
             self._session_factory = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
         return self._session_factory
+    
+    @contextmanager
+    def get_session(self):
+        """获取数据库会话的上下文管理器"""
+        session_factory = self.session_factory()
+        session = session_factory()
+        try:
+            yield session
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()

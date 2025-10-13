@@ -101,8 +101,10 @@ def run_simple_ma_strategy_backtest():
         
         # 6. 运行回测
         result = strategy_service.run_single_strategy_backtest(
-            strategy_class=SimpleMAStrategy,
-            strategy_config=strategy_config,
+            buy_strategy_class=SimpleMAStrategy,
+            buy_strategy_config=strategy_config,
+            sell_strategy_class=SimpleMAStrategy,
+            sell_strategy_config=strategy_config,
             symbols=symbols,
             start_date=start_date,
             end_date=end_date,
@@ -204,8 +206,10 @@ def run_full_market_backtest():
         # 6. 运行全市场回测
         print("\\n开始执行全市场回测，这可能需要较长时间...")
         result = strategy_service.run_single_strategy_backtest(
-            strategy_class=SimpleMAStrategy,
-            strategy_config=strategy_config,
+            buy_strategy_class=SimpleMAStrategy,
+            buy_strategy_config=strategy_config,
+            sell_strategy_class=SimpleMAStrategy,
+            sell_strategy_config=strategy_config,
             symbols=all_symbols,  # 使用全部股票
             start_date=start_date,
             end_date=end_date,

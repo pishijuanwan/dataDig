@@ -64,10 +64,12 @@ strategy_config = {
     'max_position_pct': 0.95
 }
 
-# 运行回测
+# 运行回测 (组合策略使用方式)
 result = strategy_service.run_single_strategy_backtest(
-    strategy_class=SimpleMAStrategy,
-    strategy_config=strategy_config,
+    buy_strategy_class=SimpleMAStrategy,
+    buy_strategy_config=strategy_config,
+    sell_strategy_class=SimpleMAStrategy,
+    sell_strategy_config=strategy_config,
     symbols=["000001.SZ", "600036.SH"],
     start_date="20220101",
     end_date="20231231"
@@ -136,10 +138,44 @@ config = StrategyConfig(
     my_param2=0.5
 )
 
-# 运行回测
+# 运行回测 (组合策略使用方式)
 result = strategy_service.run_single_strategy_backtest(
-    strategy_class=MyStrategy,
-    strategy_config=config.__dict__,
+    buy_strategy_class=MyStrategy,
+    buy_strategy_config=config.__dict__,
+    sell_strategy_class=MyStrategy,
+    sell_strategy_config=config.__dict__,
+    symbols=["000001.SZ", "600036.SH"],
+    start_date="20220101",
+    end_date="20231231"
+)
+```
+
+### 使用分离的买入卖出策略
+
+```python
+# 使用不同的买入和卖出策略
+from src.strategy.strategies.buy_strategies.ma_buy_strategy import MABuyStrategy
+from src.strategy.strategies.sell_strategies.drop_stop_loss_strategy import DropStopLossStrategy
+
+# 配置买入策略
+buy_config = {
+    'initial_cash': 100000.0,
+    'short_window': 5,
+    'long_window': 20
+}
+
+# 配置卖出策略
+sell_config = {
+    'initial_cash': 100000.0,
+    'stop_loss_threshold': 0.02  # 2%止损
+}
+
+# 运行分离策略回测
+result = strategy_service.run_single_strategy_backtest(
+    buy_strategy_class=MABuyStrategy,
+    buy_strategy_config=buy_config,
+    sell_strategy_class=DropStopLossStrategy,
+    sell_strategy_config=sell_config,
     symbols=["000001.SZ", "600036.SH"],
     start_date="20220101",
     end_date="20231231"

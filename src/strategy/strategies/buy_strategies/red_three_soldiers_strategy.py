@@ -22,6 +22,9 @@ class RedThreeSoldiersStrategy(BaseStrategy):
        - 连续三天均为阳线（收盘价 > 开盘价）
        - 开盘价呈阶梯式包容（后一天开盘价在前一天实体内部）  
        - 收盘价呈阶梯式上涨（后一天收盘价 > 前一天收盘价）
+       - 前三天每日成交量都超过前5天最高成交量的50%
+       - 每日实体比例≥50%
+       - 每日涨幅≥1%（新增条件）
        - 必须是沪深主板股票
        - 在第三天收盘价买入
     
@@ -51,9 +54,9 @@ class RedThreeSoldiersStrategy(BaseStrategy):
             symbol: 股票代码
             bar_data: K线数据
         """
-        # 存储历史数据，只保留最近4天（3天形态检查 + 1天卖出判断）
+        # 存储历史数据，保留最近8天（前5天基准 + 红三兵3天）
         self.price_history[symbol].append(bar_data.copy())
-        if len(self.price_history[symbol]) > 4:
+        if len(self.price_history[symbol]) > 8:
             self.price_history[symbol].pop(0)
     
     def is_main_board_stock(self, symbol: str) -> bool:
@@ -83,6 +86,84 @@ class RedThreeSoldiersStrategy(BaseStrategy):
             return True
             
         return False
+    
+    def check_volume_condition(self, baseline_bars: List[pd.Series], recent_bars: List[pd.Series], current_date: str = None) -> bool:
+        """
+        检查成交量条件：前三天每天的成交量都必须比前5天中最高成交量大50%
+        
+        Args:
+            baseline_bars: 前5天的K线数据（基准期）
+            recent_bars: 红三兵3天的K线数据
+            current_date: 当前交易日期
+            
+        Returns:
+            是否满足成交量条件
+        """
+        if len(baseline_bars) != 5 or len(recent_bars) != 3:
+            return False
+        
+        # 计算前5天的最高成交量
+        baseline_volumes = []
+        for bar in baseline_bars:
+            vol = bar.get('vol', 0) or 0
+            if vol > 0:
+                baseline_volumes.append(vol)
+        
+        if not baseline_volumes:
+            if self.logger:
+                self.logger.warning(f"[成交量检查] 前5天成交量数据无效，跳过成交量检查")
+            return False
+        
+        max_baseline_volume = max(baseline_volumes)
+        volume_threshold = max_baseline_volume * 2 # 要求大100%
+        
+        # 检查红三兵3天的成交量是否都超过基准最高值的1.5倍
+        day1_vol = recent_bars[0].get('vol', 0) or 0
+        day2_vol = recent_bars[1].get('vol', 0) or 0
+        day3_vol = recent_bars[2].get('vol', 0) or 0
+        
+        is_volume_valid = (day1_vol > volume_threshold and 
+                          day2_vol > volume_threshold and 
+                          day3_vol > volume_threshold)
+        
+        return is_volume_valid
+    
+    def _log_volume_analysis(self, baseline_bars: List[pd.Series], recent_bars: List[pd.Series], current_date: str = None) -> None:
+        """
+        输出成交量分析详情（仅在股票被选中时调用）
+        
+        Args:
+            baseline_bars: 前5天的K线数据（基准期）
+            recent_bars: 红三兵3天的K线数据
+            current_date: 当前交易日期
+        """
+        if not self.logger:
+            return
+        
+        # 计算前5天的最高成交量
+        baseline_volumes = []
+        for bar in baseline_bars:
+            vol = bar.get('vol', 0) or 0
+            if vol > 0:
+                baseline_volumes.append(vol)
+        
+        if not baseline_volumes:
+            return
+        
+        max_baseline_volume = max(baseline_volumes)
+        volume_threshold = max_baseline_volume * 2
+        
+        # 红三兵三天成交量
+        day1_vol = recent_bars[0].get('vol', 0) or 0
+        day2_vol = recent_bars[1].get('vol', 0) or 0
+        day3_vol = recent_bars[2].get('vol', 0) or 0
+        
+        date_info = f"，交易日期={current_date}" if current_date else ""
+        self.logger.info(f"[成交量分析] 满足成交量条件（大100%）！{date_info}")
+        self.logger.info(f"[成交量分析] 前5天最高成交量: {max_baseline_volume:.0f}")
+        self.logger.info(f"[成交量分析] 成交量阈值(2倍): {volume_threshold:.0f}")
+        self.logger.info(f"[成交量分析] 红三兵三日成交量: {day1_vol:.0f}, {day2_vol:.0f}, {day3_vol:.0f}")
+        self.logger.info(f"[成交量分析] 实际倍数: {day1_vol/max_baseline_volume:.2f}x, {day2_vol/max_baseline_volume:.2f}x, {day3_vol/max_baseline_volume:.2f}x")
     
     def check_red_three_soldiers_pattern(self, bars: List[pd.Series], current_date: str = None) -> bool:
         """
@@ -119,16 +200,7 @@ class RedThreeSoldiersStrategy(BaseStrategy):
         # 3. 收盘价呈阶梯式上涨（后一天收盘价 > 前一天收盘价）
         is_close_rise = (day2_close > day1_close) and (day3_close > day2_close)
         
-        # 4. 新增条件：成交量持续递增
-        # 处理成交量可能为None或0的情况
-        vol1 = day1.get('vol', 0) or 0
-        vol2 = day2.get('vol', 0) or 0  
-        vol3 = day3.get('vol', 0) or 0
-        
-        is_volume_increase = (0 < vol1 < vol2 < vol3)
-        is_volume_increase = True
-        
-        # 5. 新增条件：每日实体比例达到50%（实体长度/影线总长度 >= 0.5）
+        # 4. 新增条件：每日实体比例达到50%（实体长度/影线总长度 >= 0.5）
         def get_body_ratio(bar):
             """计算实体占总振幅的比例"""
             # 处理价格字段为None的情况
@@ -155,17 +227,35 @@ class RedThreeSoldiersStrategy(BaseStrategy):
                               day2_body_ratio >= min_body_ratio and 
                               day3_body_ratio >= min_body_ratio)
         
-        # 基础条件：所有5个条件必须同时满足
+        # 6. 新增条件：每日涨幅都要超过1%
+        def get_daily_return(bar):
+            """计算当日涨跌幅"""
+            open_price = bar.get('open', 0) or 0
+            close_price = bar.get('close', 0) or 0
+            if open_price <= 0:
+                return 0
+            return (close_price - open_price) / open_price
+        
+        day1_return = get_daily_return(day1)
+        day2_return = get_daily_return(day2)
+        day3_return = get_daily_return(day3)
+        
+        min_daily_return = 0.01  # 1%涨幅要求
+        is_daily_return_valid = (day1_return >= min_daily_return and 
+                               day2_return >= min_daily_return and 
+                               day3_return >= min_daily_return)
+        
+        # 基础条件：所有5个条件必须同时满足（成交量条件已在外部检查）
         base_condition = (is_day1_up and is_day2_up and is_day3_up and 
                          is_open_include and is_close_rise and 
-                         is_volume_increase and is_body_ratio_valid)
+                         is_body_ratio_valid and is_daily_return_valid)
         
         if self.logger and base_condition:
             date_info = f"，交易日期={current_date}" if current_date else ""
-            self.logger.info(f"[红三兵形态] 发现增强版红三兵形态！{date_info}")
-            self.logger.info(f"[红三兵形态] 三日收盘价: {day1_close:.2f} -> {day2_close:.2f} -> {day3_close:.2f}{date_info}")
-            self.logger.info(f"[红三兵形态] 三日成交量: {vol1:.0f} -> {vol2:.0f} -> {vol3:.0f}{date_info}")
-            self.logger.info(f"[红三兵形态] 三日实体比例: {day1_body_ratio:.1%}, {day2_body_ratio:.1%}, {day3_body_ratio:.1%}{date_info}")
+            self.logger.info(f"[形态分析] 发现增强版红三兵形态！{date_info}")
+            self.logger.info(f"[形态分析] 三日收盘价: {day1_close:.2f} -> {day2_close:.2f} -> {day3_close:.2f}{date_info}")
+            self.logger.info(f"[形态分析] 三日实体比例: {day1_body_ratio:.1%}, {day2_body_ratio:.1%}, {day3_body_ratio:.1%}{date_info}")
+            self.logger.info(f"[形态分析] 三日涨跌幅: {day1_return:.2%}, {day2_return:.2%}, {day3_return:.2%}{date_info}")
         
         return base_condition
     
@@ -187,21 +277,32 @@ class RedThreeSoldiersStrategy(BaseStrategy):
         # 更新价格历史
         self._update_price_history(symbol, bar_data)
         
-        # 检查红三兵形态
-        if len(self.price_history[symbol]) >= 3:
-            # 取最近三天数据
-            recent_bars = self.price_history[symbol][-3:]
+        # 检查红三兵形态和成交量条件
+        if len(self.price_history[symbol]) >= 8:
+            # 取最近八天数据：前5天 + 红三兵3天
+            all_history = self.price_history[symbol]
+            baseline_bars = all_history[-8:-3]  # 前5天（基准期）
+            recent_bars = all_history[-3:]      # 红三兵3天
             
             # 检查是否已持有该股票
             if symbol not in self.positions:
-                # 检查红三兵形态
                 current_date = bar_data['trade_date']
-                if self.check_red_three_soldiers_pattern(recent_bars, current_date):
-                    
-                    if self.logger:
-                        self.logger.info(f"[买入信号] {symbol} 满足红三兵形态，交易日期={current_date}，买入价格={bar_data['close']:.2f}")
-                    
-                    return True
+                
+                # 先检查成交量条件
+                if self.check_volume_condition(baseline_bars, recent_bars, current_date):
+                    # 再检查红三兵形态
+                    if self.check_red_three_soldiers_pattern(recent_bars, current_date):
+                        
+                        if self.logger:
+                            # 股票被选中，输出完整选择逻辑
+                            self.logger.info(f"[✅ 选中买入] {symbol} 通过所有筛选条件，交易日期={current_date}，买入价格={bar_data['close']:.2f}")
+                            
+                            # 输出成交量分析详情
+                            self._log_volume_analysis(baseline_bars, recent_bars, current_date)
+                            
+                            # 输出红三兵形态详情（已在check_red_three_soldiers_pattern中输出）
+                        
+                        return True
         
         return False
     
@@ -233,8 +334,9 @@ class RedThreeSoldiersStrategy(BaseStrategy):
                 "连续三天阳线",
                 "开盘价阶梯式包容",
                 "收盘价阶梯式上涨", 
-                "成交量持续递增",
-                "实体比例≥50%"
+                "成交量超过前5天最高值100%",
+                "实体比例≥50%",
+                "每日涨幅≥1%"
             ],
             "target_market": "沪深主板",
             "notes": "此策略仅负责买入信号生成，卖出策略需要单独配置"

@@ -38,11 +38,20 @@ class DailyIngestService:
         # 3) 逐交易日获取全量 daily（按日期，两市所有可交易股票）
         for idx, trade_date in enumerate(trade_dates, 1):
             if self._logger:
-                self._logger.info("[流程] (%s/%s) 拉取交易日=%s 的全市场日线", idx, len(trade_dates), trade_date)
+                self._logger.info("[流程] (%s/%s) 检查交易日=%s 的全市场日线", idx, len(trade_dates), trade_date)
+            
+            # 先检查数据库中是否已有该交易日的数据
+            if self._repo.has_daily_price_data(trade_date):
+                if self._logger:
+                    self._logger.info("[流程] 交易日=%s 数据库中已存在数据，跳过API调用", trade_date)
+                continue
+            
+            if self._logger:
+                self._logger.info("[流程] 交易日=%s 数据库中无数据，开始调用API拉取", trade_date)
             df = self._ts.query_daily(trade_date=trade_date)
             if df is None or df.empty:
                 if self._logger:
-                    self._logger.info("[流程] 交易日=%s 无数据，跳过", trade_date)
+                    self._logger.info("[流程] 交易日=%s API返回无数据，跳过", trade_date)
                 continue
             self._repo.upsert_daily_prices(df)
             if self._logger:
@@ -82,11 +91,20 @@ class DailyIngestService:
             
         for idx, trade_date in enumerate(trade_dates, 1):
             if self._logger:
-                self._logger.info("[流程] (增量 %s/%s) 拉取交易日=%s 的全市场日线", idx, len(trade_dates), trade_date)
+                self._logger.info("[流程] (增量 %s/%s) 检查交易日=%s 的全市场日线", idx, len(trade_dates), trade_date)
+            
+            # 先检查数据库中是否已有该交易日的数据
+            if self._repo.has_daily_price_data(trade_date):
+                if self._logger:
+                    self._logger.info("[流程] 交易日=%s 数据库中已存在数据，跳过API调用", trade_date)
+                continue
+            
+            if self._logger:
+                self._logger.info("[流程] 交易日=%s 数据库中无数据，开始调用API拉取", trade_date)
             df = self._ts.query_daily(trade_date=trade_date)
             if df is None or df.empty:
                 if self._logger:
-                    self._logger.info("[流程] 交易日=%s 无数据，跳过", trade_date)
+                    self._logger.info("[流程] 交易日=%s API返回无数据，跳过", trade_date)
                 continue
             self._repo.upsert_daily_prices(df)
             if self._logger:
