@@ -7,6 +7,10 @@ CREATE TABLE IF NOT EXISTS `stock_basic` (
   `market` varchar(50) DEFAULT NULL COMMENT '市场类别',
   `list_date` varchar(8) DEFAULT NULL COMMENT '上市日期',
   `list_status` varchar(2) DEFAULT NULL COMMENT '上市状态 L/P/D',
+  `total_share` double DEFAULT NULL COMMENT '总股本（万股）',
+  `float_share` double DEFAULT NULL COMMENT '流通股本（万股）',
+  `total_mv` double DEFAULT NULL COMMENT '总市值（万元）',
+  `circ_mv` double DEFAULT NULL COMMENT '流通市值（万元）',
   `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
   PRIMARY KEY (`ts_code`)

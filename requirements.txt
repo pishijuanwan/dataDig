@@ -5,3 +5,4 @@ tushare==1.4.13
 tenacity==9.0.0
 PyYAML==6.0.2
 python-dateutil==2.9.0.post0
+akshare>=1.14.0

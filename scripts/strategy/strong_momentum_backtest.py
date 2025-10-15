@@ -8,14 +8,18 @@
    - 个股过去5个交易日涨幅超过20%
    - 过去5个交易日没有一天涨幅超过9.5%
    - 限制沪深主板股票（排除创业板300和科创板688）
+   - 排除ST股票（包括ST、*ST、SST等特别处理股票）
+   - 排除已持仓股票（避免重复买入）
+   - 排除无交易股票（开盘价=收盘价且最高价=最低价的一字板）
+   - 排除涨幅过大股票（当日收盘价不超过20个交易日前收盘价的160%）
    - 单日筛选股票数量不超过10只（超过则丢弃该日所有数据）
 
 2. 交易规则：
    - 初始资金：10万
    - 每次交易手续费：0.1%（买卖各0.1%）
-   - 每只股票最多20%仓位
+   - 最多同时持有5只股票，资金按公式分配：当前现金/(5-持仓股票数量)
    - 当天股票多于仓位容量时随机选择
-   - 卖出条件：跌幅超过10%止损或持有到第6天卖出
+   - 卖出条件：跌幅超过5%止损，持有5天收益为负卖出，或持有到第11天卖出
 
 用法示例:
 python strong_momentum_backtest.py
@@ -73,8 +77,8 @@ class StrongMomentumBacktester:
         self.positions = {}  # ts_code -> Position
         self.transaction_cost = 0.001  # 0.1% 手续费
         self.max_position_ratio = 0.20  # 20% 最大仓位
-        self.stop_loss_pct = -10.0  # -10% 止损
-        self.max_hold_days = 5  # 最多持有5天（第6天卖出）
+        self.stop_loss_pct = -5.0   # -5% 止损
+        self.max_hold_days = 10  # 最多持有10天（第11天卖出）
         
         # 交易记录
         self.trades = []
@@ -177,6 +181,9 @@ class StrongMomentumBacktester:
         stmt = select(
             DailyPrice.ts_code,
             StockBasic.name,
+            DailyPrice.open,
+            DailyPrice.high,
+            DailyPrice.low,
             DailyPrice.close,
             DailyPrice.vol
         ).select_from(
@@ -210,6 +217,27 @@ class StrongMomentumBacktester:
         result = self.session.execute(stmt).scalar()
         return result if result else 0.0
     
+    def get_stock_price_20days_ago(self, ts_code: str, end_date: str) -> float:
+        """获取股票20个交易日前的收盘价"""
+        from src.models.daily_price import DailyPrice
+        from sqlalchemy import select, and_
+        
+        # 获取包含end_date在内的最近21天数据（需要第21天作为20个交易日前）
+        stmt = select(DailyPrice.close).where(
+            and_(
+                DailyPrice.ts_code == ts_code,
+                DailyPrice.trade_date <= end_date
+            )
+        ).order_by(DailyPrice.trade_date.desc()).limit(21)
+        
+        result = self.session.execute(stmt).fetchall()
+        
+        if len(result) < 21:  # 需要至少21天数据
+            return 0.0
+        
+        # 返回第21天（20个交易日前）的收盘价
+        return result[20][0] if result[20][0] else 0.0
+    
     def screen_stocks(self, trade_date: str, 
                      min_5day_return: float = 20.0,
                      max_daily_limit: float = 9.5) -> List[Dict]:
@@ -224,18 +252,44 @@ class StrongMomentumBacktester:
         # 筛选符合条件的股票
         qualified_stocks = []
         
-        for ts_code, name, close, vol in stock_list:
+        for ts_code, name, open_price, high, low, close, vol in stock_list:
             # 1. 首先检查是否为沪深主板股票
             if not self.is_main_board_stock(ts_code):
                 continue
             
-            # 2. 获取过去5日表现
+            # 2. 排除ST股票（包括ST、*ST、SST等）
+            if name and ('ST' in name or 'st' in name):
+                if self.logger:
+                    self.logger.debug(f"[选股过滤] {trade_date}: 排除ST股票 {name}({ts_code})")
+                continue
+            
+            # 3. 排除已持仓的股票
+            if ts_code in self.positions:
+                if self.logger:
+                    self.logger.debug(f"[选股过滤] {trade_date}: 排除已持仓股票 {name}({ts_code})")
+                continue
+            
+            # 4. 排除无交易股票（开盘价=收盘价 且 最高价=最低价）
+            if open_price == close and high == low:
+                if self.logger:
+                    self.logger.debug(f"[选股过滤] {trade_date}: 排除无交易股票(一字板) {name}({ts_code})")
+                continue
+            
+            # 5. 检查20个交易日涨幅限制（收盘价不能超过20天前收盘价的160%）
+            price_20days_ago = self.get_stock_price_20days_ago(ts_code, trade_date)
+            if price_20days_ago > 0 and close > price_20days_ago * 1.6:
+                if self.logger:
+                    self.logger.debug(f"[选股过滤] {trade_date}: 排除涨幅过大股票 {name}({ts_code}), "
+                                    f"当前{close:.2f}元 vs 20天前{price_20days_ago:.2f}元")
+                continue
+            
+            # 6. 获取过去5日表现
             performance_5d = self.get_stock_5day_performance(ts_code, trade_date)
             
             if not performance_5d:
                 continue
             
-            # 3. 检查是否符合涨幅和涨停条件
+            # 7. 检查是否符合涨幅和涨停条件
             if (performance_5d['total_return_5d'] >= min_5day_return and 
                 not performance_5d['has_limit_up']):
                 
@@ -249,7 +303,7 @@ class StrongMomentumBacktester:
                     'avg_volume': performance_5d['avg_volume']
                 })
         
-        # 4. 检查当日股票数量是否超过10只
+        # 8. 检查当日股票数量是否超过10只
         if len(qualified_stocks) > 10:
             if self.logger:
                 self.logger.info(f"[选股筛选] {trade_date}: 找到{len(qualified_stocks)}个机会，超过10只限制，丢弃该日所有股票")
@@ -296,11 +350,17 @@ class StrongMomentumBacktester:
                 self.logger.info(f"[仓位计算] 候选股票{len(candidate_stocks)}只超过可用仓位{available_position_slots}只，随机选择")
             candidate_stocks = random.sample(candidate_stocks, available_position_slots)
         
-        # 分配资金（将剩余资金平均分配给新买入的股票）
-        remaining_cash_per_stock = available_cash / len(candidate_stocks)
+        # 计算每个新股票应分配的资金：当前现金/(5-持仓股票数量)
+        remaining_position_slots = max_total_positions - current_positions
+        cash_per_new_stock = available_cash / remaining_position_slots
         
-        # 确保不超过最大仓位限制
-        max_cash_per_stock = min(max_position_value, remaining_cash_per_stock)
+        if self.logger:
+            self.logger.info(f"[仓位计算] 当前持仓{current_positions}只，剩余{remaining_position_slots}个仓位，"
+                           f"每个新股票分配资金: {cash_per_new_stock:,.2f}元")
+        
+        # 直接使用分配的资金，不再受20%最大仓位限制约束
+        # 因为资金分配公式本身就保证了仓位平衡
+        max_cash_per_stock = cash_per_new_stock
         
         buy_orders = []
         for stock in candidate_stocks:
@@ -389,12 +449,17 @@ class StrongMomentumBacktester:
             should_sell = False
             sell_reason = ""
             
-            # 1. 止损条件：跌幅超过10%
+            # 1. 止损条件：跌幅超过5%
             if return_pct <= self.stop_loss_pct:
                 should_sell = True
                 sell_reason = f"止损(跌幅{return_pct:.2f}%)"
             
-            # 2. 持有天数条件：持有到第6天卖出（持有天数为5天后卖出）
+            # 2. 持有5天收益为负的条件
+            elif position.hold_days >= 5 and return_pct < 0:
+                should_sell = True
+                sell_reason = f"持有5天亏损卖出(收益{return_pct:.2f}%)"
+            
+            # 3. 持有天数条件：持有到第11天卖出（持有天数为10天后卖出）
             elif position.hold_days >= self.max_hold_days:
                 should_sell = True
                 sell_reason = f"到期卖出(持有{position.hold_days}天)"
@@ -652,7 +717,7 @@ def export_backtest_results(results: Dict, output_dir: str = "/Users/nxm/Pycharm
         
         f.write("强势非涨停策略回测报告\n")
         f.write("="*50 + "\n")
-        f.write(f"策略描述: 过去5日涨幅>20%且单日涨幅≤9.5%的沪深主板股票\n")
+        f.write(f"策略描述: 过去5日涨幅>20%且单日涨幅≤9.5%的沪深主板股票(排除ST股)\n")
         f.write(f"回测时间: {summary['start_date']} 到 {summary['end_date']}\n")
         f.write(f"交易日数: {summary['trading_days']}天\n")
         f.write(f"初始资金: {summary['initial_capital']:,.2f}元\n")
@@ -709,14 +774,19 @@ def main():
     print("    • 过去5个交易日涨幅超过20%")
     print("    • 过去5个交易日没有一天涨幅超过9.5%")
     print("    • 限制沪深主板股票（排除创业板300和科创板688）")
+    print("    • 排除ST股票（包括ST、*ST、SST等特别处理股票）")
+    print("    • 排除已持仓股票（避免重复买入）")
+    print("    • 排除无交易股票（一字板等无法买入的股票）")
+    print("    • 排除涨幅过大股票（20日内涨幅不超过160%）")
     print("    • 单日筛选股票数量不超过10只")
     print("  ")
     print("  交易规则:")
     print("    • 初始资金: 10万元")
     print("    • 交易费用: 买卖各0.1%")
-    print("    • 最大仓位: 单股20%（最多5只股票）")
-    print("    • 卖出条件: 跌破买入价10%止损，或持有到第6天卖出")
-    print("    • 仓位分配: 当日候选股票过多时随机选择")
+    print("    • 持仓限制: 最多同时持有5只股票")
+    print("    • 仓位分配: 当前现金/(5-持仓股票数量)")
+    print("    • 卖出条件: 跌破买入价5%止损，持有5天收益为负卖出，或持有到第11天卖出")
+    print("    • 选股限制: 当日候选股票过多时随机选择")
     print("\n⚡ 开始执行回测...")
     
     try:
@@ -806,10 +876,11 @@ def main():
             print("="*60)
             print("\n💡 投资建议:")
             print("  1. 注意控制单笔投资金额，分散风险")
-            print("  2. 严格执行止损纪律，保护本金")
+            print("  2. 严格执行5%止损纪律，保护本金")
             print("  3. 关注市场整体走势，避免在熊市中使用")
-            print("  4. 可以结合其他技术指标优化买卖时机")
-            print("  5. 定期回测和优化策略参数")
+            print("  4. 持有5天后若收益为负及时止损，避免进一步亏损")
+            print("  5. 可以结合其他技术指标优化买卖时机")
+            print("  6. 定期回测和优化策略参数")
             
         logger.info("[强势策略回测完成] 回测程序执行完成")
         

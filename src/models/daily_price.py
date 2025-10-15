@@ -16,6 +16,10 @@ class StockBasic(Base):
     market = Column(String(50), nullable=True, comment="市场类别")
     list_date = Column(String(8), nullable=True, comment="上市日期")
     list_status = Column(String(2), nullable=True, comment="上市状态 L/P/D")
+    total_share = Column(Float, nullable=True, comment="总股本（万股）")
+    float_share = Column(Float, nullable=True, comment="流通股本（万股）")
+    total_mv = Column(Float, nullable=True, comment="总市值（万元）")
+    circ_mv = Column(Float, nullable=True, comment="流通市值（万元）")
     created_at = Column(DateTime, nullable=False, server_default=func.now(), comment="创建时间")
     updated_at = Column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now(), comment="更新时间")
 
